@@ -1,0 +1,91 @@
+name: Create Release Tag
+on:
+  workflow_dispatch:
+  push:
+    branch: main
+#    paths-ignore:
+#      - '.github/**'
+
+concurrency:
+  group: ${{ github.ref }}/tag
+  cancel-in-progress: true
+
+jobs:
+  create-tag:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set outputs
+        id: short_sha
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Check outputs
+        run: echo ${{ steps.short_sha.outputs.sha_short }}
+      - uses: rickstaa/action-create-tag@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ steps.short_sha.outputs.sha_short }}
+      - name: Create Release
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          #          cd /github/workspace || exit 1
+          
+          # Env and options
+          if [[ -z ${GITHUB_TOKEN} ]]
+          then
+          echo "The GITHUB_TOKEN environment variable is not defined."
+          exit 1
+          fi
+          
+          BRANCH=main
+          NAME=${{ steps.short_sha.outputs.sha_short }}
+          MESSAGE=${{ steps.short_sha.outputs.sha_short }}
+          DRAFT=false
+          PRERELEASE=false
+          TAG=${{ steps.short_sha.outputs.sha_short }}
+          GENERATE_RELEASE_NOTES=false
+          PREVIOUS_TAG=$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1))
+
+          echo "Previous tag: ${PREVIOUS_TAG}"
+
+          # if no tagged is supplied, pull the most recently pushed tag (the tag that triggered this action)
+          if [[ -z ${TAG} ]]; then
+            TAG=$(git describe --tags --match=* --abbrev=0)
+          fi
+
+          # basic formatting check to or to not prepend "v" to tag
+          if [[ -z ${NAME} ]]; then
+              if [[ ${TAG:0:1} == "v" ]]; then
+          	    NAME="Release ${TAG}"
+              else
+                  NAME="Release v${TAG}"
+              fi
+          fi
+
+          if [[ -z ${MESSAGE} ]]; then
+              # NOTE: If there were no pull requests associated with the commits included in the release
+              # no notes will be generated.
+              GENERATE_RELEASE_NOTES=true
+          else
+              echo "Message: ${MESSAGE}"
+          fi
+
+          echo "Next Tag: ${TAG}"
+          echo "Next Release: ${NAME}"
+          
+          JSON_STRING=$( jq -n \
+          --arg tn "$TAG" \
+          --arg tc "$BRANCH" \
+          --arg n "$NAME" \
+          --arg b "$MESSAGE" \
+          --argjson d "$DRAFT" \
+          --argjson p "$PRERELEASE" \
+          --argjson grn "$GENERATE_RELEASE_NOTES" \
+          '{tag_name: $tn, tag: $tn, target_commitish: $tc, name: $n, body: $b, draft: $d, prerelease: $p, generate_release_notes: $grn} | with_entries( select( .value != "" ) )' )
+          
+          echo ${JSON_STRING}
+          OUTPUT=$(curl --silent --header "Authorization: Bearer ${GITHUB_TOKEN}" --header "Content-Type: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28" --data "${JSON_STRING}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases")
+          echo ${OUTPUT} | jq
